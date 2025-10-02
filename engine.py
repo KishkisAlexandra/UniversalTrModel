@@ -6,7 +6,6 @@ from config import TARIFFS_DB, HOUSE_COEFS, REALISM_UPLIFT, CITIES_DB
 # ======================================================================================
 
 # --- КОНКРЕТНЫЕ СТРАТЕГИИ (МАТЕМАТИЧЕСКИЕ МОДЕЛИ) ---
-# Каждая функция — это одна конкретная формула расчета объемов.
 def _calculate_volumes_minsk_model(area_m2, occupants, month, behavior_factor, config):
     heating_months = config.get("heating_months", [])
     elec = (60.0 + 75.0 * occupants + 0.5 * area_m2) * behavior_factor
@@ -20,33 +19,24 @@ def _calculate_volumes_limassol_model(area_m2, occupants, month, behavior_factor
     return {"Электроэнергия": elec, "Вода": water}
 
 # --- РЕЕСТР ДОСТУПНЫХ СТРАТЕГИЙ ---
-# Связывает имя модели из config.py с функцией, которая ее реализует.
 VOLUME_CALCULATION_STRATEGIES = {
     "standard_minsk": _calculate_volumes_minsk_model,
     "standard_limassol": _calculate_volumes_limassol_model,
 }
 
 # --- УНИВЕРСАЛЬНЫЙ ДВИЖОК РАСЧЕТА ОБЪЕМОВ ---
-# Этот движок не содержит if/elif и не знает о существовании "Минска" или "Лимасола".
 def calculate_volumes(city, area_m2, occupants, month, behavior_factor):
     city_config = CITIES_DB.get(city, {})
     model_name = city_config.get("volume_model", "")
-    
-    # Выбираем нужную функцию-стратегию из реестра по имени
     strategy_function = VOLUME_CALCULATION_STRATEGIES.get(model_name)
-    
     if strategy_function:
-        # Если стратегия найдена, вызываем ее
         return strategy_function(area_m2, occupants, month, behavior_factor, city_config)
-    else:
-        # Если для города не указана модель, или модель не найдена, возвращаем пустоту
-        return {}
+    return {}
 
 # ======================================================================================
 # 2. ЛОГИКА РАСЧЕТА СТОИМОСТИ (ПАТТЕРН "КОНВЕЙЕР")
 # ======================================================================================
 
-# --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ-ОПЕРАТОРЫ ---
 def _apply_progressive_rate_op(volume, brackets):
     cost = 0; remaining_volume = volume
     for bracket in sorted(brackets, key=lambda x: x.get('from', 0)):
@@ -56,7 +46,6 @@ def _apply_progressive_rate_op(volume, brackets):
         remaining_volume -= vol_in_bracket
     return cost
 
-# --- ГЛАВНЫЙ УНИВЕРСАЛЬНЫЙ КАЛЬКУЛЯТОР СТОИМОСТИ ---
 def _execute_pipeline(pipeline, rule, volumes, calculation_params):
     current_value = 0
     params = rule.get("params", {})
@@ -64,38 +53,30 @@ def _execute_pipeline(pipeline, rule, volumes, calculation_params):
     for step in pipeline:
         op = step.get("operator")
         
-        # Получение исходных данных
         if op == "get_volume": current_value = volumes.get(step["source"], 0)
         elif op == "get_param": current_value = calculation_params.get(step["param_key"], 0)
         elif op == "get_fixed_amount": current_value = params.get(step["param_key"], 0)
         
-        # Математические операции
-        elif op == "add": current_value += params.get(step["param_key"], 0)
-        elif op == "multiply": current_value *= params.get(step["param_key"], 1)
+        elif op == "add_param": current_value += params.get(step["param_key"], 0)
+        # ИЗМЕНЕНО: Оператор multiply разделен на два для ясности и исправления ошибки
+        elif op == "multiply_by_param": current_value *= params.get(step["param_key"], 1)
+        elif op == "multiply_by_context": current_value *= calculation_params.get(step["param_key"], 1)
 
-        # Сложные и логические операции
         elif op == "apply_progressive_rate": current_value = _apply_progressive_rate_op(current_value, params.get(step["param_key"], []))
         
         elif op == "apply_conditional_value":
             param_to_check = calculation_params.get(step["check_param"], 0)
             threshold = step["threshold"]
-            condition = step["condition"] # "gt" (>), "lt" (<), "eq" (==)
-            
-            is_true = False
-            if condition == "gt" and param_to_check > threshold: is_true = True
-            elif condition == "lt" and param_to_check < threshold: is_true = True
-            elif condition == "eq" and param_to_check == threshold: is_true = True
-            
+            condition = step["condition"]
+            is_true = (condition == "gt" and param_to_check > threshold) or \
+                      (condition == "lt" and param_to_check < threshold) or \
+                      (condition == "eq" and param_to_check == threshold)
             key_to_use = step["value_if_true"] if is_true else step["value_if_false"]
             current_value = params.get(key_to_use, 0)
 
         elif op == "sum_of_steps":
-            total = 0
-            for sub_pipeline in step.get("pipelines", []):
-                total += _execute_pipeline(sub_pipeline, rule, volumes, calculation_params)
-            current_value = total
+            current_value = sum(_execute_pipeline(sub_pipeline, rule, volumes, calculation_params) for sub_pipeline in step.get("pipelines", []))
 
-        # Модификаторы результата
         elif op == "apply_vat": current_value *= (1 + rule.get("vat", 0))
         elif op == "apply_subsidy":
             keys = step.get("params_keys", [])
@@ -107,14 +88,8 @@ def _execute_pipeline(pipeline, rule, volumes, calculation_params):
     return current_value
 
 def calculate_costs(city, volumes, calculation_params):
-    costs = {}
-    city_tariffs = TARIFFS_DB.get(city, {})
-
-    for service, rule in city_tariffs.items():
-        pipeline = rule.get("pipeline", [])
-        final_value = _execute_pipeline(pipeline, rule, volumes, calculation_params)
-        costs[service] = round(final_value, 2)
-
+    costs = {service: round(_execute_pipeline(rule.get("pipeline", []), rule, volumes, calculation_params), 2)
+             for service, rule in TARIFFS_DB.get(city, {}).items()}
     costs["Итого"] = round(sum(v for k, v in costs.items() if k != "Итого"), 2)
     return costs
 
@@ -128,7 +103,6 @@ def apply_neighbor_adjustment(costs, house_category):
     if "Электроэнергия" in adjusted_costs: adjusted_costs["Электроэнергия"] *= house_coef.get("electricity", 1.0)
     if "Отопление" in adjusted_costs: adjusted_costs["Отопление"] *= house_coef.get("heating", 1.0)
     
-    # Применяем общий "коэффициент реализма", исключая "Итого"
     final_costs = {k: v * REALISM_UPLIFT for k, v in adjusted_costs.items() if k != "Итого"}
     final_costs["Итого"] = round(sum(final_costs.values()), 2)
     return final_costs
