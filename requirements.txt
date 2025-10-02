@@ -1,0 +1,8 @@
+streamlit
+plotly
+pandas
+numpy
+matplotlib
+pillow
+pytesseract
+pyyaml
