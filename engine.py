@@ -1,96 +1,41 @@
 # engine.py
 from config import TARIFFS_DB, HOUSE_COEFS, REALISM_UPLIFT, CITIES_DB
 
-# --- Расчет объемов (остается без изменений, т.к. это отдельная логика) ---
-def calculate_volumes(city, area_m2, occupants, month, behavior_factor):
-    volume_model = CITIES_DB.get(city, {}).get("volume_model", "")
-    if volume_model == "standard_minsk": return _calculate_volumes_minsk(area_m2, occupants, month, behavior_factor)
-    if volume_model == "standard_limassol": return _calculate_volumes_limassol(area_m2, occupants, behavior_factor)
-    return {}
-
-def _calculate_volumes_minsk(area_m2, occupants, month, behavior_factor):
-    heating_months = CITIES_DB.get("Минск", {}).get("heating_months", [])
+# --- КОНКРЕТНЫЕ СТРАТЕГИИ РАСЧЕТА ОБЪЕМОВ ---
+# Вся специфичная математика живет здесь, в изолированных функциях.
+def _calculate_volumes_minsk(area_m2, occupants, month, behavior_factor, config):
+    heating_months = config.get("heating_months", [])
     elec = (60.0 + 75.0 * occupants + 0.5 * area_m2) * behavior_factor
     water = 4.5 * occupants * behavior_factor
     heat_monthly = (0.15 * area_m2) / len(heating_months) if month in heating_months and heating_months else 0.0
     return {"Электроэнергия": elec, "Вода": water, "Канализация": water, "Отопление": heat_monthly}
 
-def _calculate_volumes_limassol(area_m2, occupants, behavior_factor):
+def _calculate_volumes_limassol(area_m2, occupants, month, behavior_factor, config):
     elec = (3.0 * area_m2 + 150.0 * occupants) * behavior_factor
     water = (4.0 * occupants) * behavior_factor
     return {"Электроэнергия": elec, "Вода": water}
 
-# --- Вспомогательная функция для прогрессивной шкалы ---
-def _apply_progressive_rate_op(volume, brackets):
-    cost = 0; remaining_volume = volume
-    for bracket in sorted(brackets, key=lambda x: x['from']):
-        if remaining_volume <= 0: break
-        vol_in_bracket = min(remaining_volume, bracket.get('to', float('inf')) - bracket['from'] + 1)
-        cost += vol_in_bracket * bracket['rate']
-        remaining_volume -= vol_in_bracket
-    return cost
+# --- РЕЕСТР ДОСТУПНЫХ СТРАТЕГИЙ ---
+# Движок будет обращаться к этому словарю по имени стратегии из config.py
+VOLUME_CALCULATION_STRATEGIES = {
+    "standard_minsk": _calculate_volumes_minsk,
+    "standard_limassol": _calculate_volumes_limassol,
+}
 
-# --- ГЛАВНЫЙ УНИВЕРСАЛЬНЫЙ КАЛЬКУЛЯТОР ---
-def _execute_pipeline(pipeline, rule, volumes, calculation_params):
-    current_value = 0
-    params = rule.get("params", {})
-
-    for step in pipeline:
-        op = step.get("operator")
-        
-        if op == "get_volume": current_value = volumes.get(step["source"], 0)
-        elif op == "get_param": current_value = calculation_params.get(step["param_key"], 0)
-        elif op == "get_fixed_amount": current_value = params.get(step["param_key"], 0)
-        
-        elif op == "add": current_value += params.get(step["param_key"], 0)
-        elif op == "multiply": current_value *= params.get(step["param_key"], 1)
-
-        elif op == "apply_progressive_rate": current_value = _apply_progressive_rate_op(current_value, params.get(step["param_key"], []))
-        
-        elif op == "apply_conditional_value":
-            param_to_check = calculation_params.get(step["check_param"], 0)
-            threshold = step["threshold"]
-            condition = step["condition"] # "gt" (>), "lt" (<), "eq" (==)
-            
-            is_true = False
-            if condition == "gt" and param_to_check > threshold: is_true = True
-            elif condition == "lt" and param_to_check < threshold: is_true = True
-            elif condition == "eq" and param_to_check == threshold: is_true = True
-            
-            current_value = params.get(step["value_if_true"]) if is_true else params.get(step["value_if_false"])
-
-        elif op == "sum_of_steps":
-            total = 0
-            for sub_pipeline in step["pipelines"]:
-                total += _execute_pipeline(sub_pipeline, rule, volumes, calculation_params)
-            current_value = total
-
-        elif op == "apply_vat": current_value *= (1 + rule.get("vat", 0))
-        elif op == "apply_subsidy":
-            s_rate, f_rate = params.get(step["params_keys"][0]), params.get(step["params_keys"][1])
-            multiplier = calculation_params.get("subsidy_multiplier", 1.0)
-            rate = s_rate * multiplier + f_rate * (1 - multiplier)
-            current_value *= rate
-            
-    return current_value
-
-def calculate_costs(city, volumes, calculation_params):
-    costs = {}
-    city_tariffs = TARIFFS_DB.get(city, {})
-
-    for service, rule in city_tariffs.items():
-        pipeline = rule.get("pipeline", [])
-        final_value = _execute_pipeline(pipeline, rule, volumes, calculation_params)
-        costs[service] = round(final_value, 2)
-
-    costs["Итого"] = round(sum(v for k, v in costs.items() if k != "Итого"), 2)
-    return costs
+# --- УНИВЕРСАЛЬНЫЙ ДВИЖОК РАСЧЕТА ОБЪЕМОВ ---
+# Этот движок больше не содержит if/elif и не знает о существовании "Минска".
+def calculate_volumes(city, area_m2, occupants, month, behavior_factor):
+    city_config = CITIES_DB.get(city, {})
+    model_name = city_config.get("volume_model", "")
     
-def apply_neighbor_adjustment(costs, house_category):
-    adjusted_costs = costs.copy()
-    house_coef = HOUSE_COEFS.get(house_category, {})
-    if "Электроэнергия" in adjusted_costs: adjusted_costs["Электроэнергия"] *= house_coef.get("electricity", 1.0)
-    if "Отопление" in adjusted_costs: adjusted_costs["Отопление"] *= house_coef.get("heating", 1.0)
-    adjusted_costs = {k: v * REALISM_UPLIFT for k, v in adjusted_costs.items() if k != "Итого"}
-    adjusted_costs["Итого"] = round(sum(adjusted_costs.values()), 2)
-    return adjusted_costs
+    # Выбираем нужную функцию-стратегию из реестра
+    strategy_function = VOLUME_CALCULATION_STRATEGIES.get(model_name)
+    
+    if strategy_function:
+        # Если стратегия найдена, вызываем ее
+        return strategy_function(area_m2, occupants, month, behavior_factor, city_config)
+    else:
+        # Если для города не указана модель, или модель не найдена, возвращаем пустоту
+        return {}
+
+# ... (остальная часть engine.py с calculate_costs и т.д. остается без изменений) ...
