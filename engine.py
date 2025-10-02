@@ -1,7 +1,7 @@
 # engine.py
 from config import CITIES_DB, TARIFFS_DB, HOUSE_COEFS, REALISM_UPLIFT
 
-# --- Расчет объемов (остается без изменений) ---
+# --- Расчет объемов ---
 def calculate_volumes(city, area_m2, occupants, month, behavior_factor):
     volume_model = CITIES_DB.get(city, {}).get("volume_model", "")
     if volume_model == "standard_minsk": return _calculate_volumes_minsk(area_m2, occupants, month, behavior_factor)
@@ -9,7 +9,7 @@ def calculate_volumes(city, area_m2, occupants, month, behavior_factor):
     return {}
 
 def _calculate_volumes_minsk(area_m2, occupants, month, behavior_factor):
-    # ... (код без изменений)
+    # ... 
     heating_months = CITIES_DB["Минск"]["heating_months"]
     elec = (60.0 + 75.0 * occupants + 0.5 * area_m2) * behavior_factor
     water = 4.5 * occupants * behavior_factor
@@ -17,7 +17,7 @@ def _calculate_volumes_minsk(area_m2, occupants, month, behavior_factor):
     return {"Электроэнергия": elec, "Вода": water, "Канализация": water, "Отопление": heat_monthly}
 
 def _calculate_volumes_limassol(area_m2, occupants, behavior_factor):
-    # ... (код без изменений)
+    # ... 
     elec = (3.0 * area_m2 + 150.0 * occupants) * behavior_factor
     water = (4.0 * occupants) * behavior_factor
     return {"Электроэнергия": elec, "Вода": water}
@@ -70,7 +70,7 @@ def calculate_costs(city, volumes, calculation_params):
     return costs
 
 def apply_neighbor_adjustment(costs, house_category):
-    # ... (код без изменений)
+    # ... 
     adjusted_costs = costs.copy()
     house_coef = HOUSE_COEFS.get(house_category, {})
     if "Электроэнергия" in adjusted_costs: adjusted_costs["Электроэнергия"] *= house_coef.get("electricity", 1.0)
