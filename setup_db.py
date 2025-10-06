@@ -7,7 +7,7 @@ DB_FILE = "utilities.db"
 
 # --- ДАННЫЕ ИЗ ВАШЕГО СТАРОГО CONFIG.PY ---
 # Мы используем их как источник для наполнения базы данных
-CITIES_DB_OLD = {
+CITIES_DATA = {
     "Минск": {
         "currency": "BYN",
         "volume_model": "standard_minsk",
@@ -32,7 +32,7 @@ CITIES_DB_OLD = {
     }
 }
 
-TARIFFS_DB_OLD = {
+TARIFFS_DATA = {
     "Минск": {
         "Электроэнергия": {"params": {"subsidy_rate": 0.2412, "full_rate": 0.2969}, "pipeline": [{"operator": "get_volume", "source": "Электроэнергия"}, {"operator": "apply_subsidy", "params_keys": ["subsidy_rate", "full_rate"]}]},
         "Вода": {"params": {"rate": 1.7858}, "pipeline": [{"operator": "get_volume", "source": "Вода"}, {"operator": "multiply_by_param", "param_key": "rate"}]},
@@ -49,9 +49,7 @@ TARIFFS_DB_OLD = {
     }
 }
 
-# --- КОД ДЛЯ СОЗДАНИЯ И ЗАПОЛНЕНИЯ БАЗЫ ---
 def setup_database():
-    # Удаляем старый файл БД, если он существует, чтобы начать с чистого листа
     if os.path.exists(DB_FILE):
         os.remove(DB_FILE)
         print(f"Старый файл '{DB_FILE}' удален.")
@@ -59,7 +57,9 @@ def setup_database():
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
 
-    # --- 1. Создаем структуру (схему) таблиц ---
+    # --- ВОТ ВАШИ "ЧЕРТЕЖИ" (SQL-КОД), ВСТРОЕННЫЕ В СКРИПТ ---
+    # Мы используем тройные кавычки """ для удобного написания многострочных команд
+    print("Создание таблиц...")
     cursor.execute("""
         CREATE TABLE cities (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -89,50 +89,35 @@ def setup_database():
     """)
     print("Таблицы успешно созданы.")
 
-    # --- 2. Переносим данные из словарей в таблицы ---
-    # Сначала все города
-    for name, data in CITIES_DB_OLD.items():
+    # --- Дальше идет код для заполнения этих таблиц данными ---
+    print("Добавление городов...")
+    for name, data in CITIES_DATA.items():
         cursor.execute(
             "INSERT INTO cities (name, currency, volume_model, recommendations) VALUES (?, ?, ?, ?)",
             (name, data['currency'], data['volume_model'], json.dumps(data['recommendations']))
         )
-    print("Города добавлены.")
-
-    # Потом все уникальные услуги
-    all_services = set()
-    for city_services in TARIFFS_DB_OLD.values():
-        for service_name in city_services.keys():
-            all_services.add(service_name)
     
+    print("Добавление услуг...")
+    all_services = set(service for city in TARIFFS_DATA.values() for service in city.keys())
     for service in all_services:
         cursor.execute("INSERT INTO services (name) VALUES (?)", (service,))
-    print("Услуги добавлены.")
     
-    # Теперь самое главное - тарифы
-    # Для удобства сначала получим id городов и услуг
+    print("Добавление тарифов и правил расчета...")
     cities_map = {row[1]: row[0] for row in cursor.execute("SELECT id, name FROM cities").fetchall()}
     services_map = {row[1]: row[0] for row in cursor.execute("SELECT id, name FROM services").fetchall()}
 
-    for city_name, services_data in TARIFFS_DB_OLD.items():
+    for city_name, services_data in TARIFFS_DATA.items():
         for service_name, tariff_data in services_data.items():
-            city_id = cities_map[city_name]
-            service_id = services_map[service_name]
-            
             cursor.execute(
                 "INSERT INTO tariffs (city_id, service_id, vat, params, pipeline) VALUES (?, ?, ?, ?, ?)",
-                (
-                    city_id,
-                    service_id,
-                    tariff_data.get('vat', 0.0),
-                    json.dumps(tariff_data.get('params', {})),
-                    json.dumps(tariff_data.get('pipeline', []))
-                )
+                (cities_map[city_name], services_map[service_name], tariff_data.get('vat', 0.0),
+                 json.dumps(tariff_data.get('params', {})), json.dumps(tariff_data.get('pipeline', [])))
             )
-    print("Тарифы и правила расчета добавлены.")
 
     conn.commit()
     conn.close()
-    print(f"База данных '{DB_FILE}' успешно создана и заполнена.")
+    print(f"\nБаза данных '{DB_FILE}' успешно создана и заполнена. Этот скрипт больше не нужен.")
 
+# Эта строка позволяет запустить скрипт из командной строки
 if __name__ == "__main__":
     setup_database()
