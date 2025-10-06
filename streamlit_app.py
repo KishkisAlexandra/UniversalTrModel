@@ -1,4 +1,9 @@
 # streamlit_app.py
+# -- Версия с принудительным обновлением -- <-- ДОБАВЬТЕ ЭТУ СТРОКУ
+import streamlit as st
+import pandas as pd
+
+# streamlit_app.py
 import streamlit as st
 import pandas as pd
 import plotly.express as px
