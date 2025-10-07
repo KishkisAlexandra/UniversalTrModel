@@ -1,5 +1,6 @@
 # streamlit_app.py
-# -- Версия с принудительным обновлением -- <-- ДОБАВЬТЕ ЭТУ СТРОКУ
+# -- Версия с принудительным обновлением 
+
 import streamlit as st
 import pandas as pd
 
